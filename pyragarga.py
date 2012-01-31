@@ -26,7 +26,7 @@ class KGItem(object):
 
     def __init__(self, kg_id):
         """ Initialize object with the item's Karagarga ID. """
-        self.kg_id = None
+        self.kg_id = int(kg_id)
         self.imdb_id = None
         
         self.title = None
@@ -36,9 +36,10 @@ class KGItem(object):
         self.genres = []
         self.files = []
         self.torrent = None
+        self.source = None
+        self.subtitles = None
 
-        self.kg_id = int(kg_id)
-    
+
     def update_info(self):
         """ Get the details page from KG and retrieve information
             from there.
@@ -235,17 +236,64 @@ class Pyragarga(object):
         """ Stores all snatched items in a SQLite database to ease the load
             on the server and make queries faster.
         """
-        schema = """
-                    create table items (
-                        kg_id       integer primary key,
-                        imdb_id     integer,
-                        title       text,
-                        director    text,
-                        year        text,
-                        country     text,
-                        torrent     blob,
-                        files       integer,
-                        genres      text
-                    )
-                """
-        db_is_new = not os.path.exists(db_file)
+        raise NotImplementedError
+        
+        
+class LocalDatabase(object):
+    """ Manages items stored locally, to ease load on the KG-Server and make
+        querying faster.
+    """
+    schema = """
+                create table items (
+                    kg_id       integer primary key,
+                    imdb_id     integer,
+                    title       text,
+                    director    text,
+                    year        text,
+                    country     text,
+                    torrent     blob,
+                    genres      text,
+                    source      text,
+                    subtitles   text
+                );
+
+                create table files (
+                    id          integer primary key,
+                    path        text,
+                    filename    text,
+                    item_id     integer not null references items(kg_id)
+                );
+            """
+
+    def __init__(self, db_file):
+        self.conn = sqlite3.connect(db_file)
+        if not os.path.exists(db_file):
+            self.conn.execute(LocalDatabase.schema)
+        pass
+
+    def retrieve(self, kg_id):
+        """ Retrieve item with the given KG-ID from the database. """
+        raise NotImplementedError
+
+    def store(self, item):
+        """ Store given item in database. """
+        cursor = self.conn.cursor()
+        # Store the item
+        cursor.execute(*self._build_insert(item, 'items'))
+        # TODO: Store the associated files
+
+    def search(self, query):
+        """ Run a query on the database. """
+        raise NotImplementedError
+
+    def _build_insert(self, item, table):
+        # FIXME: Huge security gap, as this makes the application vulnerable
+        #        to SQL injection. I don't know how to construct queries with
+        #        a varying number of keys safely, though :-/
+        #        On top of that, the code is butt-ugly, but well...
+        keys = tuple(x for x in item.__dict__
+                if item.__dict__[x] and x != 'files')
+        values = tuple(item.__dict__[x] for x in keys)
+        query = "insert into %s (%s) values (%s)" % (
+                    table, ', '.join(keys), ', '.join('?'*len(keys)))
+        return (query, values)
