@@ -29,7 +29,8 @@ class KGItem(object):
         self.kg_id = int(kg_id)
         self.imdb_id = None
         
-        self.title = None
+        self.orig_title = None
+        self.aka_title = None
         self.director = None
         self.year = None
         self.country = None
@@ -53,17 +54,23 @@ class Pyragarga(object):
     """ Class that represents the tracker's API.
     """
 
-    def __init__(self, username, password):
+    def __init__(self, username, password, db_file=None):
         """ Initialize access to the tracker by logging in. """
+        if db_file:
+            self._database = LocalDatabase(db_file)
         self._session = requests.session()
         self._session.post(kg_url + login_script,
                 data={'username':username, 'password':password})
-        self.user_id = requests.utils.dict_from_cookiejar(
-                self._session.cookies)['uid']
+        self.user_id = self._session.cookies['uid']
     
     def get_item(self, item_id):
         """ Returns the item with the given id. """
-        pass
+        details_page = self._build_tree(
+                self._session.get(kg_url + details_script,
+                    params={'id': item_id, 'filelist':1}
+                    ).content)
+        return self._parse_details_page(details_page)
+
 
     def get_imdb_items(self, imdb_id):
         """ Returns all items listed for a given iMDB-ID. """
@@ -86,11 +93,11 @@ class Pyragarga(object):
             result_items += self._parse_result_page(page)
         # TODO: Somehow trying to get the files during the row parsing step
         #       fails because of bad 'bencode' data...
-        for item in result_items:
-            try:
-                item.files = self._get_files_from_torrent(item.torrent)
-            except:
-                print "Invalid torrent data for \"%s\"" % item.title
+        #for item in result_items:
+            #try:
+                #item.files = self._get_files_from_torrent(item.torrent)
+            #except:
+                #print "Invalid torrent data for \"%s\"" % item.title
         return result_items
     
     def get_snatched(self, user_id=None):
@@ -177,6 +184,41 @@ class Pyragarga(object):
                 )
         return result_tree
 
+    def _parse_details_page(self, page):
+        """ Parses a page that contains details for a KG item.
+            Returns a KGItem.
+        """
+        # TODO: Get filename(s) either from torrent-name or from filelist
+        table = list(page.findall(".//table[@width='750']"))[0]
+        for row in (x for x in list(table.findall('tr'))[1:]
+                if len(x.getchildren()) != 1):
+            try:
+                heading = row.find(".//td[@class='heading']").content
+            except:
+                continue
+            if heading == 'Internet Link':
+                # TODO: Get imdb-ID
+                pass
+            elif heading == 'Director / Artist':
+                # TODO: Get director
+                pass
+            elif heading == 'Year':
+                # TODO: Get year
+                pass
+            elif heading == 'Genres':
+                # TODO: Get genres
+                pass
+            elif heading == 'Language':
+                # TODO: Get language
+                pass
+            elif heading == 'Subtitles':
+                # TODO: Get subtitles
+                pass
+            elif heading == 'Source':
+                # TODO: Get source
+                pass
+
+
     def _parse_result_page(self, page):
         """ Parses a page that contains a table listing KG items. """
         items = []
@@ -191,6 +233,7 @@ class Pyragarga(object):
         """ Parses a row from a table of results and returns a dictionary with
             all relevant information on the item.
         """
+        # TODO: Refactor! Duplicate code with _parse_details_page!
         kg_id_rexp = re.compile(r"^details.php\?id=(\d*)")
         item = KGItem(int(kg_id_rexp.match(
             row.find('td/span/a').get('href')).groups()[0]))
@@ -203,7 +246,11 @@ class Pyragarga(object):
                     item.imdb_id = imdb_id_rexp.match(imdb_url).groups()[0]
                 except:
                     print "Bad URL: %s" % imdb_url
-        item.title = row.find('td/span/a/b').text
+        title_string = row.find('td/span/a/b').text
+        if " AKA " in title_string:
+            (item.orig_title, item.aka_title) = title_string.split(' AKA ')
+        else:
+            item.orig_title = title_string
         var_links = list(row.findall('td/a'))
         item.director = var_links[0].text
         item.year = var_links[1].text
@@ -211,9 +258,9 @@ class Pyragarga(object):
         item.genres = [x.text for x in var_links
                        if genre_rexp.match(x.get('href'))]
         item.country = row.find('td/a/img').get('alt')
-        item.torrent = self._session.get(
-                kg_url + row.find(".//img[@alt='Download']/..").get('href')
-                ).content
+        #item.torrent = self._session.get(
+                #kg_url + row.find(".//img[@alt='Download']/..").get('href')
+                #).content
         return item
 
     def _get_files_from_torrent(self, torrent):
@@ -247,7 +294,8 @@ class LocalDatabase(object):
                 create table items (
                     kg_id       integer primary key,
                     imdb_id     integer,
-                    title       text,
+                    orig_title  text,
+                    aka_title   text,
                     director    text,
                     year        text,
                     country     text,
@@ -282,7 +330,7 @@ class LocalDatabase(object):
         cursor.execute(*self._build_insert(item, 'items'))
         # TODO: Store the associated files
 
-    def search(self, query):
+    def _run_query(self, query):
         """ Run a query on the database. """
         raise NotImplementedError
 
