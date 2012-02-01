@@ -48,20 +48,26 @@ class KGItem(object):
         pass
 
     def __repr__(self):
-        return u"<KGItem \"%s\" with id %d>" % (self.title, self.kg_id)
+        return u"<KGItem \"%s\" with id %d>" % (self.orig_title, self.kg_id)
 
 class Pyragarga(object):
     """ Class that represents the tracker's API.
     """
 
+
     def __init__(self, username, password, db_file=None):
         """ Initialize access to the tracker by logging in. """
+        self._database = None
         if db_file:
-            self._database = LocalDatabase(db_file)
+            self.enable_db(db_file)
         self._session = requests.session()
         self._session.post(kg_url + login_script,
                 data={'username':username, 'password':password})
         self.user_id = self._session.cookies['uid']
+
+    def enable_db(self, db_file):
+        if not self._database:
+            self._database = LocalDatabase(db_file)
     
     def get_item(self, item_id):
         """ Returns the item with the given id. """
@@ -69,8 +75,10 @@ class Pyragarga(object):
                 self._session.get(kg_url + details_script,
                     params={'id': item_id, 'filelist':1}
                     ).content)
-        return self._parse_details_page(details_page)
-
+        item = self._parse_details_page(details_page, item_id)
+        if self._database:
+            self._database.store(item)
+        return item
 
     def get_imdb_items(self, imdb_id):
         """ Returns all items listed for a given iMDB-ID. """
@@ -184,39 +192,41 @@ class Pyragarga(object):
                 )
         return result_tree
 
-    def _parse_details_page(self, page):
+    def _parse_details_page(self, page, kg_id):
         """ Parses a page that contains details for a KG item.
             Returns a KGItem.
         """
+        item = KGItem(int(kg_id))
         # TODO: Get filename(s) either from torrent-name or from filelist
+        title = page.find(".//title").text
+        h1_rexp = re.compile(r"^\n      KG - (.*) \((.*)\) (.*)")
+        title = h1_rexp.match(title).groups()[0]
+        if "aka" in title:
+            (item.orig_title, item.aka_title) = title.split(' aka ')
+        elif "AKA" in title:
+            (item.orig_title, item.aka_title) = title.split(' AKA ')
+        else:
+            item.orig_title = title
         table = list(page.findall(".//table[@width='750']"))[0]
         for row in (x for x in list(table.findall('tr'))[1:]
                 if len(x.getchildren()) != 1):
-            try:
-                heading = row.find(".//td[@class='heading']").content
-            except:
-                continue
+            heading = row.find(".//td[@class='heading']").text.strip()
             if heading == 'Internet Link':
-                # TODO: Get imdb-ID
-                pass
+                item.imdb_id = self._get_imdb_id(row)
             elif heading == 'Director / Artist':
-                # TODO: Get director
-                pass
+                item.director = row.find(".//a").text
             elif heading == 'Year':
-                # TODO: Get year
-                pass
+                item.year = row.find(".//a").text
             elif heading == 'Genres':
-                # TODO: Get genres
-                pass
+                item.genres = [x.text for x in row.findall(".//a") if x.text]
             elif heading == 'Language':
-                # TODO: Get language
-                pass
+                item.language = row.find(".//td[@align='left']").text
             elif heading == 'Subtitles':
-                # TODO: Get subtitles
+                # TODO: Get subtitles. How to handle included/external subs?
                 pass
             elif heading == 'Source':
-                # TODO: Get source
-                pass
+                item.source = row.find(".//td[@align='left']").text
+        return item
 
 
     def _parse_result_page(self, page):
@@ -227,25 +237,18 @@ class Pyragarga(object):
                     if len(x.getchildren()) != 1):
             item = self._parse_item_row(row)
             items.append(item)
+            if self._database:
+                self._database.store(item)
         return items
 
     def _parse_item_row(self, row):
         """ Parses a row from a table of results and returns a dictionary with
             all relevant information on the item.
         """
-        # TODO: Refactor! Duplicate code with _parse_details_page!
         kg_id_rexp = re.compile(r"^details.php\?id=(\d*)")
         item = KGItem(int(kg_id_rexp.match(
             row.find('td/span/a').get('href')).groups()[0]))
-        imdb_id_rexp = re.compile(r"^.*http://www.imdb.com/title/tt(\d*).*")
-        imdb_link = row.find(".//img[@alt='imdb link']/..")
-        if imdb_link:
-            imdb_url = imdb_link.get('href')
-            if 'http://www.imdb.com/' in imdb_url:
-                try:
-                    item.imdb_id = imdb_id_rexp.match(imdb_url).groups()[0]
-                except:
-                    print "Bad URL: %s" % imdb_url
+        item.imdb_id = self._get_imdb_id(row)
         title_string = row.find('td/span/a/b').text
         if " AKA " in title_string:
             (item.orig_title, item.aka_title) = title_string.split(' AKA ')
@@ -279,13 +282,26 @@ class Pyragarga(object):
                 files.append(os.path.join(name, file_))
         return files
 
-    def _persist_snatched(self, items, db_file):
-        """ Stores all snatched items in a SQLite database to ease the load
-            on the server and make queries faster.
-        """
-        raise NotImplementedError
-        
-        
+    def _get_imdb_id(self, row):
+        imdb_id_rexp = re.compile(r"^.*http://www.imdb.com/title/tt(\d*).*")
+        imdb_link = row.find(".//img[@alt='imdb link']/..")
+        if imdb_link:
+            imdb_url = imdb_link.get('href')
+            if 'http://www.imdb.com/' in imdb_url:
+                try:
+                    return int(imdb_id_rexp.match(imdb_url).groups()[0])
+                except:
+                    return None
+
+    def _get_genres(self, links):
+        genre_rexp = re.compile(r"^.*browse.php\?genre=(\d*).*") 
+        genres = [x.text for x in links
+                       if genre_rexp.match(x.get('href'))]
+        return genres
+
+
+
+
 class LocalDatabase(object):
     """ Manages items stored locally, to ease load on the KG-Server and make
         querying faster.
@@ -302,7 +318,8 @@ class LocalDatabase(object):
                     torrent     blob,
                     genres      text,
                     source      text,
-                    subtitles   text
+                    subtitles   text,
+                    language    text
                 );
 
                 create table files (
@@ -314,10 +331,10 @@ class LocalDatabase(object):
             """
 
     def __init__(self, db_file):
+        db_exists = os.path.exists(db_file)
         self.conn = sqlite3.connect(db_file)
-        if not os.path.exists(db_file):
-            self.conn.execute(LocalDatabase.schema)
-        pass
+        if not db_exists:
+            self.conn.executescript(LocalDatabase.schema)
 
     def retrieve(self, kg_id):
         """ Retrieve item with the given KG-ID from the database. """
@@ -327,12 +344,14 @@ class LocalDatabase(object):
         """ Store given item in database. """
         cursor = self.conn.cursor()
         # Store the item
-        cursor.execute(*self._build_insert(item, 'items'))
+        if item:
+            cursor.execute(*self._build_insert(item, 'items'))
         # TODO: Store the associated files
 
     def _run_query(self, query):
         """ Run a query on the database. """
-        raise NotImplementedError
+        cursor = self.conn.cursor()
+        return cursor.execute(query)
 
     def _build_insert(self, item, table):
         # FIXME: Huge security gap, as this makes the application vulnerable
@@ -341,7 +360,7 @@ class LocalDatabase(object):
         #        On top of that, the code is butt-ugly, but well...
         keys = tuple(x for x in item.__dict__
                 if item.__dict__[x] and x != 'files')
-        values = tuple(item.__dict__[x] for x in keys)
+        values = tuple(unicode(item.__dict__[x]) for x in keys)
         query = "insert into %s (%s) values (%s)" % (
                     table, ', '.join(keys), ', '.join('?'*len(keys)))
         return (query, values)
