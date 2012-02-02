@@ -24,35 +24,33 @@ bookmarks_script = 'bookmarks.php'
 
 class KGItem(object):
 
-    def __init__(self, kg_id):
+    def __init__(self, kg_id, imdb_id=None, orig_title=None, aka_title=None,
+                 director=None, year=None, country=None, torrent=None,
+                 genres=[], source=None, subtitles=None, language=None):
         """ Initialize object with the item's Karagarga ID. """
         self.kg_id = int(kg_id)
-        self.imdb_id = None
+        self.imdb_id = imdb_id
         
-        self.orig_title = None
-        self.aka_title = None
-        self.director = None
-        self.year = None
-        self.country = None
-        self.genres = []
+        self.orig_title = orig_title
+        self.aka_title = aka_title
+        self.director = director
+        self.year = year
+        self.country = country
+        self.genres = genres
         self.files = []
-        self.torrent = None
-        self.source = None
-        self.subtitles = None
-
-
-    def update_info(self):
-        """ Get the details page from KG and retrieve information
-            from there.
-        """
-        pass
+        self.torrent = torrent
+        self.source = source
+        self.subtitles = subtitles
+        self.language = language
 
     def __repr__(self):
-        return u"<KGItem \"%s\" with id %d>" % (self.orig_title, self.kg_id)
+        return "<KGItem \"%s\" with id %d>" % (self.orig_title, self.kg_id)
 
 class Pyragarga(object):
-    """ Class that represents the tracker's API.
-    """
+    """ Class that represents the tracker's API."""
+    # TODO: Move all tracker-code to a separate TrackerApi class, so that
+    #       all this class does is to provide wrappers that decide whether
+    #       to get the data locally or from the KG server
 
 
     def __init__(self, username, password, db_file=None):
@@ -71,6 +69,11 @@ class Pyragarga(object):
     
     def get_item(self, item_id):
         """ Returns the item with the given id. """
+        if self._database:
+            try:
+                return self._database.retrieve(item_id)
+            except PyragargaError:
+                pass
         details_page = self._build_tree(
                 self._session.get(kg_url + details_script,
                     params={'id': item_id, 'filelist':1}
@@ -99,13 +102,6 @@ class Pyragarga(object):
         result_items = []
         for page in result_pages:
             result_items += self._parse_result_page(page)
-        # TODO: Somehow trying to get the files during the row parsing step
-        #       fails because of bad 'bencode' data...
-        #for item in result_items:
-            #try:
-                #item.files = self._get_files_from_torrent(item.torrent)
-            #except:
-                #print "Invalid torrent data for \"%s\"" % item.title
         return result_items
     
     def get_snatched(self, user_id=None):
@@ -122,7 +118,6 @@ class Pyragarga(object):
         current_page += 1
         last_page = self._get_max_pagenum(snatched_pages[0])
         while current_page <= last_page:
-            print "Getting page %d of %d" % (current_page+1, last_page+1)
             snatched_pages.append(self._build_tree(
                 self._session.get(kg_url + history_script,
                 params={'id':user_id, 'rcompsort':1, 'page':current_page}
@@ -130,7 +125,6 @@ class Pyragarga(object):
             current_page += 1
         snatched_items = []
         for num, page in enumerate(snatched_pages):
-            print "Parsing page %d of %d" % (num+1, last_page+1)
             snatched_items += self._parse_result_page(page)
         return snatched_items
 
@@ -153,6 +147,11 @@ class Pyragarga(object):
         """
         clean_markup = tidy_document(markup,
                                      options={'numeric-entities':1})[0]
+        # FIXME: This fails when some weird characters appear on the page.
+        #        Happens mostly in the comments.
+        #        Examples: "&#21"
+        #        Proposed solution: Pre-process the xml-file to get rid
+        #         of these characters.
         etree = self._fix_treetags(ET.fromstring(clean_markup))
         return etree
 
@@ -198,13 +197,13 @@ class Pyragarga(object):
         """
         item = KGItem(int(kg_id))
         # TODO: Get filename(s) either from torrent-name or from filelist
-        title = page.find(".//title").text
-        h1_rexp = re.compile(r"^\n      KG - (.*) \((.*)\) (.*)")
+        title = page.find(".//title").text.strip()
+        h1_rexp = re.compile(r"KG - (.*) \((.*)\)(.*)")
         title = h1_rexp.match(title).groups()[0]
-        if "aka" in title:
-            (item.orig_title, item.aka_title) = title.split(' aka ')
-        elif "AKA" in title:
-            (item.orig_title, item.aka_title) = title.split(' AKA ')
+        if " aka " in title:
+            (item.orig_title, item.aka_title) = title.split(' aka ')[0:2]
+        elif " AKA " in title:
+            (item.orig_title, item.aka_title) = title.split(' AKA ')[0:2]
         else:
             item.orig_title = title
         table = list(page.findall(".//table[@width='750']"))[0]
@@ -220,12 +219,12 @@ class Pyragarga(object):
             elif heading == 'Genres':
                 item.genres = [x.text for x in row.findall(".//a") if x.text]
             elif heading == 'Language':
-                item.language = row.find(".//td[@align='left']").text
+                item.language = row.find(".//td[@align='left']").text.strip()
             elif heading == 'Subtitles':
                 # TODO: Get subtitles. How to handle included/external subs?
                 pass
             elif heading == 'Source':
-                item.source = row.find(".//td[@align='left']").text
+                item.source = row.find(".//td[@align='left']").text.strip()
         return item
 
 
@@ -237,8 +236,6 @@ class Pyragarga(object):
                     if len(x.getchildren()) != 1):
             item = self._parse_item_row(row)
             items.append(item)
-            if self._database:
-                self._database.store(item)
         return items
 
     def _parse_item_row(self, row):
@@ -250,8 +247,9 @@ class Pyragarga(object):
             row.find('td/span/a').get('href')).groups()[0]))
         item.imdb_id = self._get_imdb_id(row)
         title_string = row.find('td/span/a/b').text
+        # FIXME: Sometimes, this still fails with an "ValueError"
         if " AKA " in title_string:
-            (item.orig_title, item.aka_title) = title_string.split(' AKA ')
+            (item.orig_title, item.aka_title) = title_string.split(' AKA ')[0:2]
         else:
             item.orig_title = title_string
         var_links = list(row.findall('td/a'))
@@ -261,26 +259,7 @@ class Pyragarga(object):
         item.genres = [x.text for x in var_links
                        if genre_rexp.match(x.get('href'))]
         item.country = row.find('td/a/img').get('alt')
-        #item.torrent = self._session.get(
-                #kg_url + row.find(".//img[@alt='Download']/..").get('href')
-                #).content
         return item
-
-    def _get_files_from_torrent(self, torrent):
-        """ Returns a list with all the files contained in a given torrent. """
-        files = []
-        torrent_data = bdecode(torrent)
-        name = torrent_data['info']['name']
-        files.append(name)
-        if 'files' in torrent_data['info'].keys():
-            for file_ in [x['path']
-                          for x in torrent_data['info']['files']]:
-                # FIXME: Sometimes bdecode seems to give a list of length 1
-                #        instead of a plain string for 'path'
-                if type(file_) == list:
-                    file_ = file_[0]
-                files.append(os.path.join(name, file_))
-        return files
 
     def _get_imdb_id(self, row):
         imdb_id_rexp = re.compile(r"^.*http://www.imdb.com/title/tt(\d*).*")
@@ -300,12 +279,11 @@ class Pyragarga(object):
         return genres
 
 
-
-
 class LocalDatabase(object):
     """ Manages items stored locally, to ease load on the KG-Server and make
         querying faster.
     """
+
     schema = """
                 create table items (
                     kg_id       integer primary key,
@@ -338,20 +316,28 @@ class LocalDatabase(object):
 
     def retrieve(self, kg_id):
         """ Retrieve item with the given KG-ID from the database. """
-        raise NotImplementedError
+        cursor = self.conn.cursor()
+        cursor.execute("""select * from items where kg_id = ?;""", (kg_id,))
+        result = cursor.fetchone()
+        if not result:
+            raise PyragargaError("No item found.")
+        # FIXME: Convert 'genres' column back to a list first
+        return KGItem(*result)
 
     def store(self, item):
-        """ Store given item in database. """
+        """ Store given item in database."""
         cursor = self.conn.cursor()
         # Store the item
         if item:
             cursor.execute(*self._build_insert(item, 'items'))
+            self.conn.commit()
         # TODO: Store the associated files
 
     def _run_query(self, query):
         """ Run a query on the database. """
         cursor = self.conn.cursor()
-        return cursor.execute(query)
+        cursor.execute(query)
+        return cursor.fetchall()
 
     def _build_insert(self, item, table):
         # FIXME: Huge security gap, as this makes the application vulnerable
@@ -364,3 +350,8 @@ class LocalDatabase(object):
         query = "insert into %s (%s) values (%s)" % (
                     table, ', '.join(keys), ', '.join('?'*len(keys)))
         return (query, values)
+
+
+class PyragargaError(Exception):
+
+    pass

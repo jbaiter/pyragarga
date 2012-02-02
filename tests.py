@@ -32,8 +32,8 @@ class TestPyragarga(object):
 
     def test_persist_db(self):
         self.pyragarga.enable_db('/tmp/pykg_test.db')
-        self.pyragarga.get_snatched(user_id=29027)
         self.pyragarga.get_item(10593)
+        assert self.pyragarga._database.retrieve(10593).orig_title == u"Chronik der Anna Magdalena Bach"
         assert len(self.pyragarga._database._run_query(
-            """select * from items;""").fetchall()) == 53
+            """select * from items;""")) == 1
 
