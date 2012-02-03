@@ -22,6 +22,13 @@ details_script = 'details.php'
 history_script = 'history.php'
 bookmarks_script = 'bookmarks.php'
 
+kg_id_rexp = re.compile(r"^details.php\?id=(\d*)")
+page_rexp = re.compile(r"^.*\.php\?.*page=(\d*).*")
+h1_rexp = re.compile(r"KG - (.*) \((.*)\)(.*)")
+genre_rexp = re.compile(r"^.*browse.php\?genre=(\d*).*") 
+imdb_id_rexp = re.compile(r"^.*http://www.imdb.com/title/tt(\d*).*")
+filename_rexp = re.compile(r"(.*\.avi|AVI|mkv|MKV)\.torrent$")
+
 class KGItem(object):
 
     def __init__(self, kg_id, imdb_id=None, orig_title=None, aka_title=None,
@@ -51,6 +58,13 @@ class Pyragarga(object):
     # TODO: Move all tracker-code to a separate TrackerApi class, so that
     #       all this class does is to provide wrappers that decide whether
     #       to get the data locally or from the KG server
+    #       Rationale: Makes API more extensible, e.g. to add support for
+    #                  other trackers
+    # TODO: Make the API movie-only, i.e. filter out ebooks and music from
+    #       search results, raise an exception if details for one are
+    #       requested.
+    #       Rationale: Makes API simpler, no need to worry about corner-
+    #                  cases
 
 
     def __init__(self, username, password, db_file=None):
@@ -83,21 +97,19 @@ class Pyragarga(object):
             self._database.store(item)
         return item
 
-    def get_imdb_items(self, imdb_id):
-        """ Returns all items listed for a given iMDB-ID. """
-        pass
-
     def search(self, query, search_type='torrent', num_pages=1):
         """ Execute a search query for torrents of type `search_type` and
             present the results retreived from `num_pages`.
         """
         result_pages = []
-        result_pages.append(self._do_search(query))
+        result_pages.append(self._do_search(query,
+            options={'search_type':search_type}))
         if num_pages > 1:
+            print "More than one page, yay!"
             page_num = 1
-            while page_num < (num_pages-1):
+            while page_num < (num_pages):
                 result_pages.append(self._do_search(query,
-                        options={'page':page_num}))
+                    options={'search_type':search_type, 'page':page_num}))
                 page_num += 1
         result_items = []
         for page in result_pages:
@@ -132,10 +144,17 @@ class Pyragarga(object):
         """ Returns a list with all items bookmarked on the tracker by the
             user, by default excluding any item already snatched.
         """
+        # TODO: Implement this properly
+        #       Idea:
+        #           - Get first page of bookmarks
+        #           - Determine number of last page ('_get_max_pagenum')
+        #           - Go through all bookmarks pages, parsing them for
+        #             KGItems ('_parse_result_page')
         start_page = self._build_tree(
             self._session.get(kg_url + bookmarks_script,
                 params={'page':0}).content)
-        return self._get_max_pagenum(start_page)
+        raise NotImplementedError
+
 
     def get_mom_items(self, mom_id):
         """ Returns a list with all the items from a MoM. """
@@ -170,7 +189,6 @@ class Pyragarga(object):
         browse_links = [x.get('href') for x in
                       pagetree.findall('body/table/tr/td//p/a')]
         #Find the largest value for 'page'
-        page_rexp = re.compile(r"^.*\.php\?.*page=(\d*).*")
         page_nums = [int(page_rexp.match(x).groups()[0]) for x in browse_links]
         page_nums.sort(reverse=True)
         max_pagenum = page_nums[0]
@@ -178,11 +196,7 @@ class Pyragarga(object):
 
     def _do_search(self, query, options=None):
         default_options = {'incldead':0}
-        # Some default parameters
-        if not options or 'search_type' not in options.keys():
-            options = dict(default_options, **{'search_type':'torrent'})
-        else:
-            options = dict(default_options, **options)
+        options = dict(default_options, **options)
         # Add the search query
         options = dict(options, **{'search':query})
         result_tree = self._build_tree(
@@ -196,9 +210,7 @@ class Pyragarga(object):
             Returns a KGItem.
         """
         item = KGItem(int(kg_id))
-        # TODO: Get filename(s) either from torrent-name or from filelist
         title = page.find(".//title").text.strip()
-        h1_rexp = re.compile(r"KG - (.*) \((.*)\)(.*)")
         title = h1_rexp.match(title).groups()[0]
         if " aka " in title:
             (item.orig_title, item.aka_title) = title.split(' aka ')[0:2]
@@ -207,24 +219,43 @@ class Pyragarga(object):
         else:
             item.orig_title = title
         table = list(page.findall(".//table[@width='750']"))[0]
-        for row in (x for x in list(table.findall('tr'))[1:]
+        for row in (x for x in list(table.findall('tr'))
                 if len(x.getchildren()) != 1):
-            heading = row.find(".//td[@class='heading']").text.strip()
-            if heading == 'Internet Link':
-                item.imdb_id = self._get_imdb_id(row)
-            elif heading == 'Director / Artist':
-                item.director = row.find(".//a").text
-            elif heading == 'Year':
-                item.year = row.find(".//a").text
-            elif heading == 'Genres':
-                item.genres = [x.text for x in row.findall(".//a") if x.text]
-            elif heading == 'Language':
-                item.language = row.find(".//td[@align='left']").text.strip()
-            elif heading == 'Subtitles':
-                # TODO: Get subtitles. How to handle included/external subs?
-                pass
-            elif heading == 'Source':
-                item.source = row.find(".//td[@align='left']").text.strip()
+            rowhead = row.find(".//td[@class='rowhead']")
+            # For some reason 'bool(rowhead)' evaluates to 'False' even if
+            # it is not 'None'... Don't ask me why :-/
+            if rowhead != None:
+                torrent_link = row.findall(".//a")[0]
+                torrent_name = torrent_link.text.strip()
+                torrent_url = torrent_link.get('href')
+            else:
+                heading = row.find(".//td[@class='heading']").text.strip()
+                if heading == 'Internet Link':
+                    item.imdb_id = self._get_imdb_id(row)
+                elif heading == 'Director / Artist':
+                    item.director = row.find(".//a").text
+                elif heading == 'Year':
+                    item.year = row.find(".//a").text
+                elif heading == 'Genres':
+                    item.genres = [x.text for x in row.findall(".//a") if x.text]
+                elif heading == 'Language':
+                    item.language = row.find(".//td[@align='left']").text.strip()
+                elif heading == 'Subtitles':
+                    # TODO: Get subtitles. How to handle included/external subs?
+                    pass
+                elif heading == 'Source':
+                    item.source = row.find(".//td[@align='left']").text.strip()
+
+        file_table = table.find("./tr/td[@align='left']/table[@class='main']")
+        if file_table:
+            for row in file_table[1:]:
+                item.files.append(row.find('td').text.strip())
+        elif filename_rexp.match(torrent_name):
+            item.files = [filename_rexp.match(torrent_name).groups()[0]]
+        else:
+            torrent = self._session.get(kg_url + torrent_url).content
+            item.files = self._get_files_from_torrent(torrent)
+
         return item
 
 
@@ -242,12 +273,10 @@ class Pyragarga(object):
         """ Parses a row from a table of results and returns a dictionary with
             all relevant information on the item.
         """
-        kg_id_rexp = re.compile(r"^details.php\?id=(\d*)")
         item = KGItem(int(kg_id_rexp.match(
             row.find('td/span/a').get('href')).groups()[0]))
         item.imdb_id = self._get_imdb_id(row)
         title_string = row.find('td/span/a/b').text
-        # FIXME: Sometimes, this still fails with an "ValueError"
         if " AKA " in title_string:
             (item.orig_title, item.aka_title) = title_string.split(' AKA ')[0:2]
         else:
@@ -255,14 +284,12 @@ class Pyragarga(object):
         var_links = list(row.findall('td/a'))
         item.director = var_links[0].text
         item.year = var_links[1].text
-        genre_rexp = re.compile(r"^.*browse.php\?genre=(\d*).*") 
         item.genres = [x.text for x in var_links
                        if genre_rexp.match(x.get('href'))]
         item.country = row.find('td/a/img').get('alt')
         return item
 
     def _get_imdb_id(self, row):
-        imdb_id_rexp = re.compile(r"^.*http://www.imdb.com/title/tt(\d*).*")
         imdb_link = row.find(".//img[@alt='imdb link']/..")
         if imdb_link:
             imdb_url = imdb_link.get('href')
@@ -272,11 +299,22 @@ class Pyragarga(object):
                 except:
                     return None
 
-    def _get_genres(self, links):
-        genre_rexp = re.compile(r"^.*browse.php\?genre=(\d*).*") 
-        genres = [x.text for x in links
-                       if genre_rexp.match(x.get('href'))]
-        return genres
+    def _get_files_from_torrent(self, torrent):
+        """ Returns a list with all the files contained in a given torrent. """
+        files = []
+        torrent_data = bdecode(torrent)
+        name = torrent_data['info']['name']
+        files.append(name)
+        if 'files' in torrent_data['info'].keys():
+            for file_ in [x['path']
+                          for x in torrent_data['info']['files']]:
+                # FIXME: Sometimes bdecode seems to give a list of length 1
+                #        instead of a plain string for 'path'
+                if type(file_) == list:
+                    file_ = file_[0]
+                files.append(os.path.join(name, file_))
+        return files
+
 
 
 class LocalDatabase(object):
@@ -331,7 +369,7 @@ class LocalDatabase(object):
         if item:
             cursor.execute(*self._build_insert(item, 'items'))
             self.conn.commit()
-        # TODO: Store the associated files
+        # TODO: Store the associated files in the database
 
     def _run_query(self, query):
         """ Run a query on the database. """

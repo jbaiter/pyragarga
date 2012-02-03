@@ -18,11 +18,21 @@ class TestPyragarga(object):
         assert result.orig_title == u"Chronik der Anna Magdalena Bach"
         assert result.aka_title == u"The Chronicle of Anna Magdalena Bach"
         assert result.genres == ['Arthouse', 'Drama']
-        assert "Jean-Marie Straub(1968)-Chronicle of Anna Magdalena Bach (Chronik der Anna Magdalena Bach)[93.DVD]{Ugo Pi.avi" in result.files
+        assert ("Jean-Marie Straub(1968)-Chronicle of Anna Magdalena Bach(Chronik der Anna Magdalena Bach)[93.DVD]{Ugo Pi.avi"
+                in result.files)
+        assert ("Straight.Shooting.(John.Ford, 1917).by.chainsaw[ci-cl].avi"
+                in self.pyragarga.get_item(25906).files)
+        assert ("Seven.Chances.1925.BluRay.720p.DTS.x264-CHD.mkv"
+                in self.pyragarga.get_item(131335).files)
 
     def test_search_simple(self):
         result = self.pyragarga.search('Violence.Without.A.Cause.1969.DVDRip.XviD-KG.avi')
         assert result[0].kg_id == 21776
+
+    def test_search_advanced(self):
+        result = self.pyragarga.search('John Ford', search_type='director', num_pages=2)
+        assert len(result) == 100
+        assert result[4].orig_title == "Straight Shooting"
 
     def test_get_snatched(self):
         result = self.pyragarga.get_snatched(user_id=29027)
