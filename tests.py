@@ -44,6 +44,9 @@ class TestPyragarga(object):
         self.pyragarga.enable_db('/tmp/pykg_test.db')
         self.pyragarga.get_item(10593)
         assert self.pyragarga._database.retrieve(10593).orig_title == u"Chronik der Anna Magdalena Bach"
+        assert ("Jean-Marie Straub(1968)-Chronicle of Anna Magdalena Bach(Chronik der Anna Magdalena Bach)[93.DVD]{Ugo Pi.avi"
+                in self.pyragarga._database.retrieve(10593).files)
         assert len(self.pyragarga._database._run_query(
             """select * from items;""")) == 1
-
+        assert len(self.pyragarga._database._run_query(
+            """select * from files;""")) == 1

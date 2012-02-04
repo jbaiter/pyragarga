@@ -155,22 +155,16 @@ class Pyragarga(object):
                 params={'page':0}).content)
         raise NotImplementedError
 
-
-    def get_mom_items(self, mom_id):
-        """ Returns a list with all the items from a MoM. """
-        pass
-
     def _build_tree(self, markup):
         """ Helper method that builds a XML element tree from the markup
             it gets passed, tidying it beforehand.
         """
         clean_markup = tidy_document(markup,
-                                     options={'numeric-entities':1})[0]
-        # FIXME: This fails when some weird characters appear on the page.
-        #        Happens mostly in the comments.
-        #        Examples: "&#21"
-        #        Proposed solution: Pre-process the xml-file to get rid
-        #         of these characters.
+                                     options={'numeric-entities':1,
+                                              'output-xml':1,
+                                              'output-encoding':'utf8'})[0]
+        # Small fix for a cornercase involving invalid characters...
+        clean_markup = clean_markup.replace('\x15', '_')
         etree = self._fix_treetags(ET.fromstring(clean_markup))
         return etree
 
@@ -340,7 +334,6 @@ class LocalDatabase(object):
 
                 create table files (
                     id          integer primary key,
-                    path        text,
                     filename    text,
                     item_id     integer not null references items(kg_id)
                 );
@@ -359,8 +352,11 @@ class LocalDatabase(object):
         result = cursor.fetchone()
         if not result:
             raise PyragargaError("No item found.")
+        item = KGItem(*result)
+        cursor.execute("""select * from files where item_id = ?;""", (kg_id,))
+        item.files = [x[1] for x in cursor.fetchall()]
         # FIXME: Convert 'genres' column back to a list first
-        return KGItem(*result)
+        return item
 
     def store(self, item):
         """ Store given item in database."""
@@ -368,8 +364,10 @@ class LocalDatabase(object):
         # Store the item
         if item:
             cursor.execute(*self._build_insert(item, 'items'))
-            self.conn.commit()
-        # TODO: Store the associated files in the database
+        for file_ in item.files:
+            cursor.execute("""insert into files (filename, item_id)
+                values (?, ?)""", (file_, item.kg_id))
+        self.conn.commit()
 
     def _run_query(self, query):
         """ Run a query on the database. """
