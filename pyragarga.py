@@ -1,3 +1,10 @@
+""" pyragarga.py
+Python module to access karagarga.net.
+Useful to obtain metadata for downloaded films, grab torrent-files for
+bookmarked items, etc.
+"""
+
+
 import re
 import sys
 import os.path
@@ -15,25 +22,26 @@ import requests
 from tidylib import tidy_document
 from bencode import bdecode
 
-kg_url = 'https://karagarga.net/'
-login_script = 'takelogin.php'
-browse_script = 'browse.php'
-details_script = 'details.php'
-history_script = 'history.php'
-bookmarks_script = 'bookmarks.php'
+KG_URL = 'https://karagarga.net/'
+LOGIN_SCRIPT = 'takelogin.php'
+BROWSE_SCRIPT = 'browse.php'
+DETAILS_SCRIPT = 'details.php'
+HISTORY_SCRIPT = 'history.php'
+BOOKMARKS_SCRIPT = 'bookmarks.php'
 
-kg_id_rexp = re.compile(r"^details.php\?id=(\d*)")
-page_rexp = re.compile(r"^.*\.php\?.*page=(\d*).*")
-h1_rexp = re.compile(r"KG - (.*) \((.*)\)(.*)")
-genre_rexp = re.compile(r"^.*browse.php\?genre=(\d*).*") 
-imdb_id_rexp = re.compile(r"^.*http://www.imdb.com/title/tt(\d*).*")
-filename_rexp = re.compile(r"(.*\.avi|AVI|mkv|MKV)\.torrent$")
+KG_ID_REXP = re.compile(r"^details.php\?id=(\d*)")
+PAGE_REXP = re.compile(r"^.*\.php\?.*page=(\d*).*")
+H1_REXP = re.compile(r"KG - (.*) \((.*)\)(.*)")
+GENRE_REXP = re.compile(r"^.*browse.php\?genre=(\d*).*") 
+IMDB_ID_REXP = re.compile(r"^.*http://www.imdb.com/title/tt(\d*).*")
+FILENAME_REXP = re.compile(r"(.*\.avi|AVI|mkv|MKV)\.torrent$")
 
 class KGItem(object):
 
     def __init__(self, kg_id, imdb_id=None, orig_title=None, aka_title=None,
                  director=None, year=None, country=None, torrent=None,
-                 genres=[], source=None, subtitles=None, language=None):
+                 genres=[], source=None, subtitles=None, language=None,
+                 media_type=None):
         """ Initialize object with the item's Karagarga ID. """
         self.kg_id = int(kg_id)
         self.imdb_id = imdb_id
@@ -49,6 +57,7 @@ class KGItem(object):
         self.source = source
         self.subtitles = subtitles
         self.language = language
+        self.media_type = type
 
     def __repr__(self):
         return "<KGItem \"%s\" with id %d>" % (self.orig_title, self.kg_id)
@@ -60,6 +69,8 @@ class Pyragarga(object):
     #       to get the data locally or from the KG server
     #       Rationale: Makes API more extensible, e.g. to add support for
     #                  other trackers
+    #       Problems:  The whole API revolves around 'KGItem'-objects.
+    #                  What would a more abstract type look like?
     # TODO: Make the API movie-only, i.e. filter out ebooks and music from
     #       search results, raise an exception if details for one are
     #       requested.
@@ -73,7 +84,7 @@ class Pyragarga(object):
         if db_file:
             self.enable_db(db_file)
         self._session = requests.session()
-        self._session.post(kg_url + login_script,
+        self._session.post(KG_URL + LOGIN_SCRIPT,
                 data={'username':username, 'password':password})
         self.user_id = self._session.cookies['uid']
 
@@ -89,7 +100,7 @@ class Pyragarga(object):
             except PyragargaError:
                 pass
         details_page = self._build_tree(
-                self._session.get(kg_url + details_script,
+                self._session.get(KG_URL + DETAILS_SCRIPT,
                     params={'id': item_id, 'filelist':1}
                     ).content)
         item = self._parse_details_page(details_page, item_id)
@@ -97,7 +108,8 @@ class Pyragarga(object):
             self._database.store(item)
         return item
 
-    def search(self, query, search_type='torrent', num_pages=1):
+    def search(self, query, search_type='torrent', num_pages=1,
+            movies_only=True):
         """ Execute a search query for torrents of type `search_type` and
             present the results retreived from `num_pages`.
         """
@@ -114,9 +126,12 @@ class Pyragarga(object):
         result_items = []
         for page in result_pages:
             result_items += self._parse_result_page(page)
+        if movies_only:
+            result_items = [x for x in result_items
+                            if x.media_type == 'Movie']
         return result_items
     
-    def get_snatched(self, user_id=None):
+    def get_snatched(self, user_id=None, movies_only=True):
         """ Returns a list with all items on the tracker snatched by the user.
         """
         if not user_id:
@@ -124,20 +139,23 @@ class Pyragarga(object):
         current_page = 0
         snatched_pages = []
         snatched_pages.append(self._build_tree(
-                self._session.get(kg_url + history_script,
+                self._session.get(KG_URL + HISTORY_SCRIPT,
                     params={'id': user_id, 'rcompsort':1, 'page':current_page}
                     ).content))
         current_page += 1
         last_page = self._get_max_pagenum(snatched_pages[0])
         while current_page <= last_page:
             snatched_pages.append(self._build_tree(
-                self._session.get(kg_url + history_script,
+                self._session.get(KG_URL + HISTORY_SCRIPT,
                 params={'id':user_id, 'rcompsort':1, 'page':current_page}
                 ).content))
             current_page += 1
         snatched_items = []
-        for num, page in enumerate(snatched_pages):
+        for page in snatched_pages:
             snatched_items += self._parse_result_page(page)
+        if movies_only:
+            snatched_items = [x for x in snatched_items
+                              if x.media_type == 'Movie']
         return snatched_items
 
     def get_bookmarks(self, snatched=False):
@@ -150,9 +168,9 @@ class Pyragarga(object):
         #           - Determine number of last page ('_get_max_pagenum')
         #           - Go through all bookmarks pages, parsing them for
         #             KGItems ('_parse_result_page')
-        start_page = self._build_tree(
-            self._session.get(kg_url + bookmarks_script,
-                params={'page':0}).content)
+        #start_page = self._build_tree(
+        #    self._session.get(KG_URL + BOOKMARKS_SCRIPT,
+        #        params={'page':0}).content)
         raise NotImplementedError
 
     def _build_tree(self, markup):
@@ -183,18 +201,18 @@ class Pyragarga(object):
         browse_links = [x.get('href') for x in
                       pagetree.findall('body/table/tr/td//p/a')]
         #Find the largest value for 'page'
-        page_nums = [int(page_rexp.match(x).groups()[0]) for x in browse_links]
+        page_nums = [int(PAGE_REXP.match(x).groups()[0]) for x in browse_links]
         page_nums.sort(reverse=True)
         max_pagenum = page_nums[0]
         return max_pagenum
 
     def _do_search(self, query, options=None):
         default_options = {'incldead':0}
-        options = dict(default_options, **options)
+        options.update(default_options)
         # Add the search query
-        options = dict(options, **{'search':query})
+        options.update({'search':query})
         result_tree = self._build_tree(
-                self._session.get(kg_url + browse_script,
+                self._session.get(KG_URL + BROWSE_SCRIPT,
                     params=options).content
                 )
         return result_tree
@@ -202,10 +220,11 @@ class Pyragarga(object):
     def _parse_details_page(self, page, kg_id):
         """ Parses a page that contains details for a KG item.
             Returns a KGItem.
+            FIXME: A little too b
         """
         item = KGItem(int(kg_id))
         title = page.find(".//title").text.strip()
-        title = h1_rexp.match(title).groups()[0]
+        title = H1_REXP.match(title).groups()[0]
         if " aka " in title:
             (item.orig_title, item.aka_title) = title.split(' aka ')[0:2]
         elif " AKA " in title:
@@ -231,9 +250,11 @@ class Pyragarga(object):
                 elif heading == 'Year':
                     item.year = row.find(".//a").text
                 elif heading == 'Genres':
-                    item.genres = [x.text for x in row.findall(".//a") if x.text]
+                    item.genres = [x.text for x in row.findall(".//a")
+                                   if x.text]
                 elif heading == 'Language':
-                    item.language = row.find(".//td[@align='left']").text.strip()
+                    item.language = row.find(
+                            ".//td[@align='left']").text.strip()
                 elif heading == 'Subtitles':
                     # TODO: Get subtitles. How to handle included/external subs?
                     pass
@@ -244,10 +265,10 @@ class Pyragarga(object):
         if file_table:
             for row in file_table[1:]:
                 item.files.append(row.find('td').text.strip())
-        elif filename_rexp.match(torrent_name):
-            item.files = [filename_rexp.match(torrent_name).groups()[0]]
+        elif FILENAME_REXP.match(torrent_name):
+            item.files = [FILENAME_REXP.match(torrent_name).groups()[0]]
         else:
-            torrent = self._session.get(kg_url + torrent_url).content
+            torrent = self._session.get(KG_URL + torrent_url).content
             item.files = self._get_files_from_torrent(torrent)
 
         return item
@@ -267,7 +288,7 @@ class Pyragarga(object):
         """ Parses a row from a table of results and returns a dictionary with
             all relevant information on the item.
         """
-        item = KGItem(int(kg_id_rexp.match(
+        item = KGItem(int(KG_ID_REXP.match(
             row.find('td/span/a').get('href')).groups()[0]))
         item.imdb_id = self._get_imdb_id(row)
         title_string = row.find('td/span/a/b').text
@@ -279,7 +300,9 @@ class Pyragarga(object):
         item.director = var_links[0].text
         item.year = var_links[1].text
         item.genres = [x.text for x in var_links
-                       if genre_rexp.match(x.get('href'))]
+                       if GENRE_REXP.match(x.get('href'))]
+        item.media_type = row.find("td/div/a/img[@width='40']").get(
+                'title').split(':')[0]
         item.country = row.find('td/a/img').get('alt')
         return item
 
@@ -289,7 +312,7 @@ class Pyragarga(object):
             imdb_url = imdb_link.get('href')
             if 'http://www.imdb.com/' in imdb_url:
                 try:
-                    return int(imdb_id_rexp.match(imdb_url).groups()[0])
+                    return int(IMDB_ID_REXP.match(imdb_url).groups()[0])
                 except:
                     return None
 
@@ -329,7 +352,8 @@ class LocalDatabase(object):
                     genres      text,
                     source      text,
                     subtitles   text,
-                    language    text
+                    language    text,
+                    media_type  text
                 );
 
                 create table files (

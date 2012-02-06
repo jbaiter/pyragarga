@@ -31,14 +31,14 @@ class TestPyragarga(object):
 
     def test_search_advanced(self):
         result = self.pyragarga.search('John Ford', search_type='director', num_pages=2)
-        assert len(result) == 100
-        assert result[4].orig_title == "Straight Shooting"
+        assert len(result) == 99
+        assert result[3].orig_title == "Straight Shooting"
 
     def test_get_snatched(self):
         result = self.pyragarga.get_snatched(user_id=29027)
-        assert result[3].kg_id == 3749
-        assert result[5].orig_title == u"Bis ans Ende der Welt"
-        assert len(result) == 52
+        assert result[0].kg_id == 3749
+        assert result[1].orig_title == u"Bis ans Ende der Welt"
+        assert len(result) == 25
 
     def test_persist_db(self):
         self.pyragarga.enable_db('/tmp/pykg_test.db')
