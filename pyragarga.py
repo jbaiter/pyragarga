@@ -5,6 +5,7 @@ bookmarked items, etc.
 """
 
 
+import logging
 import re
 import sys
 import os.path
@@ -80,6 +81,7 @@ class Pyragarga(object):
 
     def __init__(self, username, password, db_file=None):
         """ Initialize access to the tracker by logging in. """
+        self.logger = logging.getLogger('pyragarga')
         self._database = None
         if db_file:
             self.enable_db(db_file)
@@ -87,9 +89,11 @@ class Pyragarga(object):
         self._session.post(KG_URL + LOGIN_SCRIPT,
                 data={'username':username, 'password':password})
         self.user_id = self._session.cookies['uid']
+        self.logger.info('Logged into KG as user %s' % username)
 
     def enable_db(self, db_file):
         if not self._database:
+            self.logger.info('Database not existing, creating...')
             self._database = LocalDatabase(db_file)
     
     def get_item(self, item_id):
@@ -106,6 +110,7 @@ class Pyragarga(object):
         item = self._parse_details_page(details_page, item_id)
         if self._database:
             self._database.store(item)
+        self.logger.info('Received details for item %d' % item.kg_id)
         return item
 
     def search(self, query, search_type='torrent', num_pages=1,
@@ -117,7 +122,6 @@ class Pyragarga(object):
         result_pages.append(self._do_search(query,
             options={'search_type':search_type}))
         if num_pages > 1:
-            print "More than one page, yay!"
             page_num = 1
             while page_num < (num_pages):
                 result_pages.append(self._do_search(query,
@@ -145,12 +149,15 @@ class Pyragarga(object):
         current_page += 1
         last_page = self._get_max_pagenum(snatched_pages[0])
         while current_page <= last_page:
+            self.logger.debug('Getting page %d of %d of snatched torrents'
+                    % (current_page, last_page))
             snatched_pages.append(self._build_tree(
                 self._session.get(KG_URL + HISTORY_SCRIPT,
                 params={'id':user_id, 'rcompsort':1, 'page':current_page}
                 ).content))
             current_page += 1
         snatched_items = []
+        self.logger.debug('Parsing "snatched torrents" pages')
         for page in snatched_pages:
             snatched_items += self._parse_result_page(page)
         if movies_only:
@@ -267,7 +274,12 @@ class Pyragarga(object):
                 item.files.append(row.find('td').text.strip())
         elif FILENAME_REXP.match(torrent_name):
             item.files = [FILENAME_REXP.match(torrent_name).groups()[0]]
-        else:
+        
+        # We need to get the list of files from the torrent-file if none of
+        # the other methods have worked or if we're dealing with a item
+        # with multiple files (as the foldername is not included in the
+        # details page)
+        if not item.files or len(item.files) > 1:
             torrent = self._session.get(KG_URL + torrent_url).content
             item.files = self._get_files_from_torrent(torrent)
 
@@ -320,7 +332,7 @@ class Pyragarga(object):
         """ Returns a list with all the files contained in a given torrent. """
         files = []
         torrent_data = bdecode(torrent)
-        name = torrent_data['info']['name']
+        name = unicode(torrent_data['info']['name'].decode('utf8'))
         files.append(name)
         if 'files' in torrent_data['info'].keys():
             for file_ in [x['path']
@@ -329,7 +341,8 @@ class Pyragarga(object):
                 #        instead of a plain string for 'path'
                 if type(file_) == list:
                     file_ = file_[0]
-                files.append(os.path.join(name, file_))
+                files.append(os.path.join(name,
+                                          unicode(file_.decode('utf8'))))
         return files
 
 
