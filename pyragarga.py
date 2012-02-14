@@ -3,7 +3,7 @@ Python module to access karagarga.net.
 Useful to obtain metadata for downloaded films, grab torrent-files for
 bookmarked items, etc.
 """
-
+# TODO: Add logging
 
 import re
 import sys
@@ -57,7 +57,7 @@ class KGItem(object):
         self.source = source
         self.subtitles = subtitles
         self.language = language
-        self.media_type = type
+        self.media_type = media_type
 
     def __repr__(self):
         return "<KGItem \"%s\" with id %d>" % (self.orig_title, self.kg_id)
@@ -71,12 +71,6 @@ class Pyragarga(object):
     #                  other trackers
     #       Problems:  The whole API revolves around 'KGItem'-objects.
     #                  What would a more abstract type look like?
-    # TODO: Make the API movie-only, i.e. filter out ebooks and music from
-    #       search results, raise an exception if details for one are
-    #       requested.
-    #       Rationale: Makes API simpler, no need to worry about corner-
-    #                  cases
-
 
     def __init__(self, username, password, db_file=None):
         """ Initialize access to the tracker by logging in. """
@@ -99,6 +93,7 @@ class Pyragarga(object):
                 return self._database.retrieve(item_id)
             except PyragargaError:
                 pass
+        # TODO: Retry if it times out 
         details_page = self._build_tree(
                 self._session.get(KG_URL + DETAILS_SCRIPT,
                     params={'id': item_id, 'filelist':1}
@@ -131,7 +126,7 @@ class Pyragarga(object):
                             if x.media_type == 'Movie']
         return result_items
     
-    def get_snatched(self, user_id=None, movies_only=True):
+    def get_snatched(self, user_id=None, movies_only=True, grab_full=False):
         """ Returns a list with all items on the tracker snatched by the user.
         """
         if not user_id:
@@ -156,6 +151,8 @@ class Pyragarga(object):
         if movies_only:
             snatched_items = [x for x in snatched_items
                               if x.media_type == 'Movie']
+        if grab_full:
+            snatched_items = [self.get_item(x.kg_id) for x in snatched_items]
         return snatched_items
 
     def get_bookmarks(self, snatched=False):
@@ -246,7 +243,7 @@ class Pyragarga(object):
                 if heading == 'Internet Link':
                     item.imdb_id = self._get_imdb_id(row)
                 elif heading == 'Director / Artist':
-                    item.director = row.find(".//a").text
+                    item.director = unicode(row.find(".//a").text)
                 elif heading == 'Year':
                     item.year = row.find(".//a").text
                 elif heading == 'Genres':
@@ -259,14 +256,19 @@ class Pyragarga(object):
                     # TODO: Get subtitles. How to handle included/external subs?
                     pass
                 elif heading == 'Source':
-                    item.source = row.find(".//td[@align='left']").text.strip()
+                    try:
+                        item.source = row.find(".//td[@align='left']"
+                                ).text.strip()
+                    except AttributeError:
+                        item.source = None
 
         file_table = table.find("./tr/td[@align='left']/table[@class='main']")
         if file_table:
             for row in file_table[1:]:
-                item.files.append(row.find('td').text.strip())
+                item.files.append(unicode(row.find('td').text.strip()))
         elif FILENAME_REXP.match(torrent_name):
-            item.files = [FILENAME_REXP.match(torrent_name).groups()[0]]
+            item.files = [unicode(
+                FILENAME_REXP.match(torrent_name).groups()[0])]
         else:
             torrent = self._session.get(KG_URL + torrent_url).content
             item.files = self._get_files_from_torrent(torrent)
@@ -310,18 +312,19 @@ class Pyragarga(object):
         imdb_link = row.find(".//img[@alt='imdb link']/..")
         if imdb_link:
             imdb_url = imdb_link.get('href')
-            if 'http://www.imdb.com/' in imdb_url:
-                try:
-                    return int(IMDB_ID_REXP.match(imdb_url).groups()[0])
-                except:
-                    return None
+            print imdb_url
+            match = IMDB_ID_REXP.match(imdb_url)
+            if match:
+                return int(match.groups()[0])
+            else:
+                return None
 
     def _get_files_from_torrent(self, torrent):
         """ Returns a list with all the files contained in a given torrent. """
         files = []
         torrent_data = bdecode(torrent)
         name = torrent_data['info']['name']
-        files.append(name)
+        files.append(name.decode('utf8'))
         if 'files' in torrent_data['info'].keys():
             for file_ in [x['path']
                           for x in torrent_data['info']['files']]:
@@ -329,7 +332,7 @@ class Pyragarga(object):
                 #        instead of a plain string for 'path'
                 if type(file_) == list:
                     file_ = file_[0]
-                files.append(os.path.join(name, file_))
+                files.append(unicode(os.path.join(name, file_)))
         return files
 
 
@@ -378,7 +381,7 @@ class LocalDatabase(object):
             raise PyragargaError("No item found.")
         item = KGItem(*result)
         cursor.execute("""select * from files where item_id = ?;""", (kg_id,))
-        item.files = [x[1] for x in cursor.fetchall()]
+        item.files = [unicode(x[1]) for x in cursor.fetchall()]
         # FIXME: Convert 'genres' column back to a list first
         return item
 

@@ -38,6 +38,7 @@ class TestPyragarga(object):
         result = self.pyragarga.get_snatched(user_id=29027)
         assert result[0].kg_id == 3749
         assert result[1].orig_title == u"Bis ans Ende der Welt"
+        assert result[1].imdb_id == 101458
         assert len(result) == 25
 
     def test_persist_db(self):
