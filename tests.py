@@ -24,6 +24,8 @@ class TestPyragarga(object):
                 in self.pyragarga.get_item(25906).files)
         assert ("Seven.Chances.1925.BluRay.720p.DTS.x264-CHD.mkv"
                 in self.pyragarga.get_item(131335).files)
+        assert ("Mad Max 3 - Beyond Thunderdome (1985) NTSC DVD5"
+                in self.pyragarga.get_item(26763).files)
 
     def test_search_simple(self):
         result = self.pyragarga.search('Violence.Without.A.Cause.1969.DVDRip.XviD-KG.avi')
