@@ -75,7 +75,7 @@ class Pyragarga(object):
 
     def __init__(self, username, password, db_file=None):
         """ Initialize access to the tracker by logging in. """
-        self.logger = logging.getLogger('pyragarga')
+        self.logger = logging.getLogger('pyragarga.Pyragarga')
         self._database = None
         if db_file:
             self.enable_db(db_file)
@@ -87,7 +87,6 @@ class Pyragarga(object):
 
     def enable_db(self, db_file):
         if not self._database:
-            self.logger.info('Database not existing, creating...')
             self._database = LocalDatabase(db_file)
     
     def get_item(self, item_id):
@@ -235,6 +234,9 @@ class Pyragarga(object):
             (item.orig_title, item.aka_title) = title.split(' AKA ')[0:2]
         else:
             item.orig_title = title
+        item.country = page.find(
+            ".//table[@class='main']/tr/td[@class='outer']/h1/img").get("alt")
+
         table = list(page.findall(".//table[@width='750']"))[0]
         for row in (x for x in list(table.findall('tr'))
                 if len(x.getchildren()) != 1):
@@ -304,7 +306,7 @@ class Pyragarga(object):
         """
         item = KGItem(int(KG_ID_REXP.match(
             row.find('td/span/a').get('href')).groups()[0]))
-        item.imdb_id = self._get_imdb_id(row)
+        #item.imdb_id = self._get_imdb_id(row)
         title_string = row.find('td/span/a/b').text
         if " AKA " in title_string:
             (item.orig_title, item.aka_title) = title_string.split(' AKA ')[0:2]
@@ -321,21 +323,25 @@ class Pyragarga(object):
         return item
 
     def _get_imdb_id(self, row):
-        imdb_link = row.find(".//img[@alt='imdb link']/..")
-        if imdb_link:
+        imdb_link = row.find(".//a[@target='_blank']")
+        if imdb_link != None:
             imdb_url = imdb_link.get('href')
-            print imdb_url
             match = IMDB_ID_REXP.match(imdb_url)
             if match:
+                self.logger.debug("Found a valid imdb-link!")
                 return int(match.groups()[0])
             else:
+                self.logger.debug("\"%s\" doesn't seem to be an imdb-url!" % imdb_url)
                 return None
 
     def _get_files_from_torrent(self, torrent):
         """ Returns a list with all the files contained in a given torrent. """
         files = []
         torrent_data = bdecode(torrent)
-        name = unicode(torrent_data['info']['name'].decode('utf8'))
+        try:
+            name = unicode(torrent_data['info']['name'].decode('utf8'))
+        except UnicodeDecodeError:
+            name = unicode(torrent_data['info']['name'].decode('iso8859-15'))
         files.append(name)
         if 'files' in torrent_data['info'].keys():
             for file_ in [x['path']
@@ -343,11 +349,12 @@ class Pyragarga(object):
                 # FIXME: Sometimes bdecode seems to give a list of length 1
                 #        instead of a plain string for 'path'
                 if type(file_) == list:
-                    file_ = file_[0]
-                files.append(os.path.join(name,
-                                          unicode(file_.decode('utf8'))))
+                    try:
+                        file_ = unicode(file_[0].decode('utf8'))
+                    except UnicodeDecodeError:
+                        file_ = unicode(file_[0].decode('iso8859-15'))
+                files.append(os.path.join(name, file_))
         return files
-
 
 
 class LocalDatabase(object):
@@ -380,9 +387,11 @@ class LocalDatabase(object):
             """
 
     def __init__(self, db_file):
+        self.logger = logging.getLogger('pyragarga.LocalDatabase')
         db_exists = os.path.exists(db_file)
         self.conn = sqlite3.connect(db_file)
         if not db_exists:
+            self.logger.info('Database not existing, creating...')
             self.conn.executescript(LocalDatabase.schema)
 
     def retrieve(self, kg_id):
