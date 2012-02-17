@@ -271,19 +271,10 @@ class Pyragarga(object):
                     except AttributeError:
                         item.source = None
 
-        file_table = table.find("./tr/td[@align='left']/table[@class='main']")
-        if file_table:
-            for row in file_table[1:]:
-                item.files.append(unicode(row.find('td').text.strip()))
-        elif FILENAME_REXP.match(torrent_name):
+        if FILENAME_REXP.match(torrent_name):
             item.files = [unicode(
                 FILENAME_REXP.match(torrent_name).groups()[0])]
-        
-        # We need to get the list of files from the torrent-file if none of
-        # the other methods have worked or if we're dealing with a item
-        # with multiple files (as the foldername is not included in the
-        # details page)
-        if not item.files or len(item.files) > 1:
+        else:
             torrent = self._session.get(KG_URL + torrent_url).content
             item.files = self._get_files_from_torrent(torrent)
 
@@ -404,7 +395,9 @@ class LocalDatabase(object):
         item = KGItem(*result)
         cursor.execute("""select * from files where item_id = ?;""", (kg_id,))
         item.files = [unicode(x[1]) for x in cursor.fetchall()]
-        # FIXME: Convert 'genres' column back to a list first
+        # TODO: There must be a nicer way to do this
+        item.genres = item.genres[2:-2].split("', '")
+        self.logger.info("Succesfully retrieved item %d" % item.kg_id)
         return item
 
     def store(self, item):
@@ -417,6 +410,7 @@ class LocalDatabase(object):
             cursor.execute("""insert into files (filename, item_id)
                 values (?, ?)""", (file_, item.kg_id))
         self.conn.commit()
+        self.logger.info("Succesfully stored item %d" % item.kg_id)
 
     def _run_query(self, query):
         """ Run a query on the database. """
